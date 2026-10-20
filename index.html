@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Love You ❤️</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000000;
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; width: 100%; height: 100%; background: #000000; }
+</style>
+</head>
+<body>
+<canvas id="heartCanvas"></canvas>
+<script>
+(function() {
+  'use strict';
+
+  var canvas = document.getElementById('heartCanvas');
+  var ctx = canvas.getContext('2d', { alpha: false });
+
+  // ===== Timeline (ms) =====
+  var INTRO_FADE   = 600;
+  var CONTOUR_START = 700;
+  var CONTOUR_END   = 11800;
+  var FILL_START    = 12100;
+  var FILL_END      = 16100;
+  var HEART_FADE_START = 16800;
+  var HEART_FADE_END   = 19800;
+
+  var SUB_START        = 17500;
+  var SUB_FLASH_DUR    = 220;
+  var SUB_REVEAL_DUR   = 900;
+  var SUB_PULSE_START  = SUB_START + SUB_FLASH_DUR + SUB_REVEAL_DUR;
+  var SUB_BEAT_START   = SUB_PULSE_START + 1400;
+  var SUB_BEAT_DUR     = 700;
+  var TOTAL_DURATION   = SUB_BEAT_START + SUB_BEAT_DUR + 3500;
+
+  var CONTOUR_COUNT = 120;
+  var FILL_COUNT    = 220;
+
+  // ===== Parametric heart =====
+  function heartPoint(t) {
+    var x = 16 * Math.pow(Math.sin(t), 3);
+    var y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+    return { x: x, y: -y };
+  }
+
+  var outlinePoly = [];
+  (function buildOutline() {
+    var N = 300;
+    for (var i = 0; i < N; i++) {
+      var t = (i / N) * Math.PI * 2;
+      outlinePoly.push(heartPoint(t));
+    }
+  })();
+
+  function pointInPolygon(px, py, poly) {
+    var inside = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      var xi = poly[i].x, yi = poly[i].y;
+      var xj = poly[j].x, yj = poly[j].y;
+      var intersect = ((yi > py) !== (yj > py)) &&
+        (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  var rawBounds = (function() {
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (var i = 0; i < outlinePoly.length; i++) {
+      var p = outlinePoly[i];
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX: minX, maxX: maxX, minY: minY, maxY: maxY,
+             w: maxX - minX, h: maxY - minY };
+  })();
+
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var cssW, cssH, W, H;
+  var heart = { cx: 0, cy: 0, scale: 1 };
+
+  var words = [];
+  var startTime = 0;
+  var animationEnded = false;
+
+  var TEXT_OPTIONS = ['Love You', 'LOVE YOU', 'I love you'];
+
+  var COLOR_TOP    = [69, 217, 255];
+  var COLOR_MID    = [0, 191, 255];
+  var COLOR_BOTTOM = [0, 102, 255];
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function rgb(c) { return 'rgb(' + (c[0]|0) + ',' + (c[1]|0) + ',' + (c[2]|0) + ')'; }
+
+  function colorByHeight(rawY) {
+    var t = (rawY - rawBounds.minY) / rawBounds.h;
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    var c;
+    if (t < 0.5) {
+      var k = t / 0.5;
+      c = [lerp(COLOR_TOP[0], COLOR_MID[0], k),
+           lerp(COLOR_TOP[1], COLOR_MID[1], k),
+           lerp(COLOR_TOP[2], COLOR_MID[2], k)];
+    } else {
+      var k2 = (t - 0.5) / 0.5;
+      c = [lerp(COLOR_MID[0], COLOR_BOTTOM[0], k2),
+           lerp(COLOR_MID[1], COLOR_BOTTOM[1], k2),
+           lerp(COLOR_MID[2], COLOR_BOTTOM[2], k2)];
+    }
+    var jitter = (Math.random() - 0.5) * 18;
+    c[0] = Math.max(0, Math.min(255, c[0] + jitter));
+    c[1] = Math.max(0, Math.min(255, c[1] + jitter));
+    c[2] = Math.max(0, Math.min(255, c[2] + jitter * 0.5));
+    return rgb(c);
+  }
+
+  function toScreen(rx, ry) {
+    return { x: heart.cx + rx * heart.scale, y: heart.cy + ry * heart.scale };
+  }
+
+  var spriteCache = new Map();
+  function getSprite(text, fontSizePx, color) {
+    var key = text + '|' + fontSizePx.toFixed(1) + '|' + color;
+    var cached = spriteCache.get(key);
+    if (cached) return cached;
+
+    var fsDev = fontSizePx * dpr;
+    var pad = Math.ceil(fsDev * 0.6) + 4;
+
+    var m = document.createElement('canvas');
+    var mctx = m.getContext('2d');
+    mctx.font = '600 ' + fsDev + 'px "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+    var tw = Math.ceil(mctx.measureText(text).width);
+    var th = Math.ceil(fsDev * 1.3);
+
+    m.width = tw + pad * 2;
+    m.height = th + pad * 2;
+
+    mctx = m.getContext('2d');
+    mctx.textAlign = 'center';
+    mctx.textBaseline = 'middle';
+    mctx.font = '600 ' + fsDev + 'px "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+
+    var cx = m.width / 2, cy = m.height / 2;
+    var glowR = fsDev * 0.22;
+    var glowSteps = 6;
+    for (var g = 1; g <= glowSteps; g++) {
+      var r = (g / glowSteps) * glowR;
+      var alpha = 0.10 * (1 - g / (glowSteps + 1));
+      mctx.globalAlpha = alpha;
+      mctx.fillStyle = color;
+      for (var a = 0; a < 8; a++) {
+        var ang = (a / 8) * Math.PI * 2;
+        mctx.fillText(text, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r);
+      }
+    }
+    mctx.globalAlpha = 1;
+    mctx.fillStyle = color;
+    mctx.fillText(text, cx, cy);
+    mctx.globalAlpha = 0.55;
+    mctx.fillStyle = '#BFE8FF';
+    mctx.fillText(text, cx, cy);
+
+    var sprite = { canvas: m, offsetX: m.width / 2, offsetY: m.height / 2 };
+    spriteCache.set(key, sprite);
+    return sprite;
+  }
+
+  function resize() {
+    cssW = window.innerWidth;
+    cssH = window.innerHeight;
+    W = cssW * dpr;
+    H = cssH * dpr;
+    canvas.width = W;
+    canvas.height = H;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+
+    var targetW = cssW * 0.90;
+    var targetH = cssH * 0.62;
+    var scale = Math.min(targetW / rawBounds.w, targetH / rawBounds.h);
+
+    heart.scale = scale;
+    heart.cx = cssW / 2;
+    heart.cy = cssH * 0.46;
+
+    buildWords();
+  }
+
+  function buildWords() {
+    words = [];
+    spriteCache.clear();
+
+    var SAMPLES = 2000;
+    var arcTable = [];
+    var totalLen = 0;
+    var prev = heartPoint(0);
+    arcTable.push({ t: 0, len: 0, x: prev.x, y: prev.y });
+    for (var i = 1; i <= SAMPLES; i++) {
+      var t = (i / SAMPLES) * Math.PI * 2;
+      var p = heartPoint(t);
+      var dx = p.x - prev.x, dy = p.y - prev.y;
+      totalLen += Math.sqrt(dx*dx + dy*dy);
+      arcTable.push({ t: t, len: totalLen, x: p.x, y: p.y });
+      prev = p;
+    }
+
+    var screenPerimeter = totalLen * heart.scale;
+    var slotLenScreen = screenPerimeter / CONTOUR_COUNT;
+    var contourFontSize = Math.min(14, Math.max(8, slotLenScreen * 0.75 / 4.5));
+
+    var maxRawDist = Math.sqrt(
+      Math.pow(Math.max(Math.abs(rawBounds.minX), Math.abs(rawBounds.maxX)), 2) +
+      Math.pow(Math.max(Math.abs(rawBounds.minY), Math.abs(rawBounds.maxY)), 2)
+    );
+
+    for (var k = 0; k < CONTOUR_COUNT; k++) {
+      var targetLen = (k / CONTOUR_COUNT) * totalLen;
+      var pt = findPointAtArc(arcTable, targetLen);
+      var scr = toScreen(pt.x, pt.y);
+      var appearTime = CONTOUR_START + (k / CONTOUR_COUNT) * (CONTOUR_END - CONTOUR_START);
+      var size = contourFontSize * (0.92 + Math.random() * 0.16);
+      var rotation = pt.tangent + (Math.random() - 0.5) * 0.15;
+
+      words.push({
+        x: scr.x, y: scr.y,
+        text: TEXT_OPTIONS[(Math.random() * 3) | 0],
+        color: colorByHeight(pt.y),
+        fontSize: size, rotation: rotation,
+        appearTime: appearTime,
+        fadeDuration: 420 + Math.random() * 220,
+        twinklePhase: Math.random() * Math.PI * 2,
+        twinkleSpeed: 0.0008 + Math.random() * 0.0015,
+        baseAlpha: 0.9 + Math.random() * 0.1,
+        isContour: true
+      });
+    }
+
+    var fillFontSize = Math.max(7.5, Math.min(11, contourFontSize * 0.85));
+    var placed = 0, attempts = 0;
+    var maxAttempts = FILL_COUNT * 200;
+    var minDistScreen = fillFontSize * 2.0;
+    var minDistSq = minDistScreen * minDistScreen;
+    var contourMinDistSq = (fillFontSize * 1.4) * (fillFontSize * 1.4);
+
+    while (placed < FILL_COUNT && attempts < maxAttempts) {
+      attempts++;
+      var rx = rawBounds.minX + Math.random() * rawBounds.w;
+      var ry = rawBounds.minY + Math.random() * rawBounds.h;
+      if (!pointInPolygon(rx, ry, outlinePoly)) continue;
+      var scr = toScreen(rx, ry);
+      var tooClose = false;
+      for (var i2 = 0; i2 < words.length; i2++) {
+        var w = words[i2];
+        var dx2 = w.x - scr.x, dy2 = w.y - scr.y;
+        var d2 = dx2*dx2 + dy2*dy2;
+        var limit = w.isContour ? contourMinDistSq : minDistSq;
+        if (d2 < limit) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+
+      var fontSize = fillFontSize * (0.85 + Math.random() * 0.3);
+      var rotation = (Math.random() - 0.5) * 0.5;
+      if (Math.random() < 0.15) rotation = (Math.random() - 0.5) * 1.0;
+
+      var distFromCenter = Math.sqrt(rx*rx + ry*ry);
+      var depth01 = Math.min(1, distFromCenter / (maxRawDist * 0.6));
+      var depthDelay = depth01 * 800;
+
+      var appearTime = FILL_START + Math.random() * (FILL_END - FILL_START) + depthDelay;
+
+      words.push({
+        x: scr.x, y: scr.y,
+        text: TEXT_OPTIONS[(Math.random() * 3) | 0],
+        color: colorByHeight(ry),
+        fontSize: fontSize, rotation: rotation,
+        appearTime: appearTime,
+        fadeDuration: 450 + Math.random() * 300,
+        twinklePhase: Math.random() * Math.PI * 2,
+        twinkleSpeed: 0.0008 + Math.random() * 0.0015,
+        baseAlpha: 0.82 + Math.random() * 0.18,
+        isContour: false
+      });
+      placed++;
+    }
+
+    words.sort(function(a, b) { return a.appearTime - b.appearTime; });
+    for (var j = 0; j < words.length; j++) {
+      getSprite(words[j].text, words[j].fontSize, words[j].color);
+    }
+  }
+
+  function findPointAtArc(arcTable, targetLen) {
+    var lo = 0, hi = arcTable.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (arcTable[mid].len < targetLen) lo = mid + 1;
+      else hi = mid;
+    }
+    var idx = Math.max(1, Math.min(arcTable.length - 1, lo));
+    var a = arcTable[idx - 1], b = arcTable[idx];
+    var segLen = b.len - a.len;
+    var f = segLen > 0.00001 ? (targetLen - a.len) / segLen : 0;
+    var x = a.x + (b.x - a.x) * f;
+    var y = a.y + (b.y - a.y) * f;
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var ang = Math.atan2(dy, dx);
+    if (ang > Math.PI / 2) ang -= Math.PI;
+    if (ang < -Math.PI / 2) ang += Math.PI;
+    return { x: x, y: y, tangent: ang };
+  }
+
+  function drawWord(w, alpha, time) {
+    if (alpha <= 0.01) return;
+    var twinkle = 0.9 + 0.1 * Math.sin(w.twinklePhase + time * w.twinkleSpeed);
+    var a = alpha * w.baseAlpha * twinkle;
+    if (a <= 0.01) return;
+    var sprite = getSprite(w.text, w.fontSize, w.color);
+    ctx.save();
+    ctx.translate(w.x * dpr, w.y * dpr);
+    if (w.rotation) ctx.rotate(w.rotation);
+    ctx.globalAlpha = a;
+    ctx.drawImage(sprite.canvas, -sprite.offsetX, -sprite.offsetY);
+    ctx.restore();
+  }
+
+  function drawHeart(time) {
+    var fadeProgress = 0;
+    if (time > HEART_FADE_START) {
+      fadeProgress = Math.min(1, (time - HEART_FADE_START) / (HEART_FADE_END - HEART_FADE_START));
+    }
+    var masterAlpha = 1 - fadeProgress;
+    if (masterAlpha <= 0.01) return;
+
+    var introAlpha = 1;
+    if (time < INTRO_FADE) {
+      introAlpha = time / INTRO_FADE;
+      if (introAlpha > 1) introAlpha = 1;
+      introAlpha = introAlpha * introAlpha * (3 - 2 * introAlpha);
+    }
+
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      if (time < w.appearTime) break;
+      var localT = time - w.appearTime;
+      var appearA = localT < w.fadeDuration ? (localT / w.fadeDuration) : 1;
+      appearA = appearA < 1 ? 1 - Math.pow(1 - appearA, 3) : 1;
+      drawWord(w, appearA * masterAlpha * introAlpha, time);
+    }
+  }
+
+  function drawVignette() {
+    var grd = ctx.createRadialGradient(
+      cssW * 0.5 * dpr, cssH * 0.5 * dpr, Math.min(cssW, cssH) * 0.25 * dpr,
+      cssW * 0.5 * dpr, cssH * 0.5 * dpr, Math.max(cssW, cssH) * 0.75 * dpr
+    );
+    grd.addColorStop(0, 'rgba(0,0,0,0)');
+    grd.addColorStop(0.6, 'rgba(0,0,0,0)');
+    grd.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // === ХВИЛІ У ФОРМІ СЕРЦЯ ===
+  // Малює хвилю — контур серця, масштабований від центру з коефіцієнтом `sizeMul`.
+  // `alpha` — прозорість, `lineW` — товщина лінії (screen px).
+  function drawHeartWave(sizeMul, alpha, lineW, time) {
+    if (alpha <= 0.005) return;
+
+    ctx.save();
+    ctx.translate(heart.cx * dpr, heart.cy * dpr);
+
+    // Невелике "дихання" форми — легке викривлення, щоб хвиля жила
+    var wobble = 0.008 * Math.sin(time * 0.003 + sizeMul * 3);
+
+    ctx.beginPath();
+    var N = 120;
+    for (var i = 0; i <= N; i++) {
+      var t = (i / N) * Math.PI * 2;
+      var p = heartPoint(t);
+      var r = sizeMul * (1 + wobble * Math.sin(t * 3 + time * 0.002));
+      var px = p.x * heart.scale * r * dpr;
+      var py = p.y * heart.scale * r * dpr;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Зовнішнє світіння — товстий м'який шар
+    ctx.strokeStyle = 'rgba(120, 200, 255, ' + (alpha * 0.35) + ')';
+    ctx.lineWidth = lineW * 2.5 * dpr;
+    ctx.stroke();
+
+    // Основна лінія
+    ctx.strokeStyle = 'rgba(160, 220, 255, ' + (alpha * 0.9) + ')';
+    ctx.lineWidth = lineW * dpr;
+    ctx.stroke();
+
+    // Яскраве ядро — тонка біла лінія
+    ctx.strokeStyle = 'rgba(230, 245, 255, ' + (alpha * 0.85) + ')';
+    ctx.lineWidth = Math.max(0.8, lineW * 0.35) * dpr;
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // === Пульсація серця (beat) + серія хвиль ===
+  // Повертає {scale, waves: [{sizeMul, alpha, lineW}, ...]}
+  function getHeartPulse(time) {
+    // Період удару ~1400 мс. Починається одразу після згасання серця
+    var PULSE_START = HEART_FADE_START + 400;   // 17.2 с
+    var period = 1400;
+
+    if (time < PULSE_START) return { scale: 1, waves: [] };
+
+    var sinceStart = time - PULSE_START;
+    var cycle = sinceStart % period;
+    var cycleIdx = Math.floor(sinceStart / period);
+
+    // --- Пульсація серця ---
+    // Швидкий "тук-тук" на початку циклу, потім спокій
+    var beat = 0;
+    if (cycle < 220) {
+      // перший удар
+      var b1 = cycle / 220;
+      beat = Math.sin(b1 * Math.PI) * 1.0;
+    } else if (cycle < 400) {
+      // другий, слабший удар
+      var b2 = (cycle - 220) / 180;
+      beat = Math.sin(b2 * Math.PI) * 0.6;
+    } else {
+      // затихання
+      var b3 = (cycle - 400) / (period - 400);
+      beat = Math.max(0, 0.15 * (1 - b3) * Math.sin((cycle - 400) * 0.02));
+    }
+
+    var scale = 1 + beat * 0.04;
+
+    // --- Хвилі ---
+    // На кожен удар породжується 1-2 хвилі, що розлітаються.
+    var waves = [];
+
+    // Хвиля 1 — від першого удару (починається на cycle = 0)
+    var waveT1 = cycle / 1500;   // 0..1 за 1.5 с
+    if (waveT1 >= 0 && waveT1 <= 1) {
+      var e1 = 1 - Math.pow(1 - waveT1, 2);      // ease-out
+      var size1 = 1.0 + e1 * 1.6;                 // 1.0 → 2.6 (у масштабах heart.scale)
+      var alpha1 = (1 - waveT1) * 0.55;
+      var lw1 = 2.5 * (1 - waveT1) + 0.8;
+      waves.push({ sizeMul: size1, alpha: alpha1, lineW: lw1 });
+    }
+
+    // Хвиля 2 — від другого удару (cycle ≈ 220)
+    var waveT2 = (cycle - 220) / 1500;
+    if (waveT2 >= 0 && waveT2 <= 1) {
+      var e2 = 1 - Math.pow(1 - waveT2, 2);
+      var size2 = 1.0 + e2 * 1.4;
+      var alpha2 = (1 - waveT2) * 0.35;
+      var lw2 = 2.0 * (1 - waveT2) + 0.6;
+      waves.push({ sizeMul: size2, alpha: alpha2, lineW: lw2 });
+    }
+
+    return { scale: scale, waves: waves };
+  }
+
+  function drawFinalText(time) {
+    if (time < SUB_START) return;
+
+    var fontSize = Math.min(cssW * 0.075, cssH * 0.045);
+    var cxScreen = heart.cx;
+    var cyScreen = heart.cy;
+
+    // --- 1. FLASH ---
+    if (time < SUB_START + SUB_FLASH_DUR) {
+      var fp = (time - SUB_START) / SUB_FLASH_DUR;
+      var flashAlpha = fp < 0.3 ? (fp / 0.3) : (1 - (fp - 0.3) / 0.7);
+      if (flashAlpha < 0) flashAlpha = 0;
+
+      var grd = ctx.createRadialGradient(
+        cxScreen * dpr, cyScreen * dpr, 0,
+        cxScreen * dpr, cyScreen * dpr, fontSize * dpr * 3.2
+      );
+      grd.addColorStop(0, 'rgba(200, 230, 255, ' + (0.9 * flashAlpha) + ')');
+      grd.addColorStop(0.4, 'rgba(120, 200, 255, ' + (0.35 * flashAlpha) + ')');
+      grd.addColorStop(1, 'rgba(0, 80, 200, 0)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // --- 2. REVEAL ---
+    var revealA = 0;
+    var revealScale = 1.0;
+    var revealBlur = 0;
+
+    if (time >= SUB_START + SUB_FLASH_DUR) {
+      var rp = (time - SUB_START - SUB_FLASH_DUR) / SUB_REVEAL_DUR;
+      if (rp > 1) rp = 1;
+      var easeOut = 1 - Math.pow(1 - rp, 3);
+      revealA = easeOut;
+      revealScale = 1.35 - 0.35 * easeOut;
+      revealBlur = (1 - easeOut) * 14;
+    }
+
+    if (revealA <= 0.005) return;
+
+    var glowPulse = 0;
+    if (time >= SUB_PULSE_START) {
+      var pt = (time - SUB_PULSE_START) / 1000;
+      glowPulse = 0.5 + 0.5 * Math.sin(pt * Math.PI * 2 / 2.4);
+    }
+
+    var beatBoost = 0;
+    if (time >= SUB_BEAT_START && time < SUB_BEAT_START + SUB_BEAT_DUR) {
+      var bp = (time - SUB_BEAT_START) / SUB_BEAT_DUR;
+      beatBoost = bp < 0.3 ? (bp / 0.3) : 1 - (bp - 0.3) / 0.7;
+      if (beatBoost < 0) beatBoost = 0;
+    }
+
+    var finalScale = revealScale + beatBoost * 0.06;
+    var glowBase = 22 + glowPulse * 10 + beatBoost * 20;
+
+    // #9 Блакитний відблиск при ударі серця
+    if (beatBoost > 0.01) {
+      var beatGrd = ctx.createRadialGradient(
+        cxScreen * dpr, cyScreen * dpr, 0,
+        cxScreen * dpr, cyScreen * dpr, fontSize * dpr * 3.5
+      );
+      beatGrd.addColorStop(0, 'rgba(140, 210, 255, ' + (0.35 * beatBoost) + ')');
+      beatGrd.addColorStop(0.5, 'rgba(80, 180, 255, ' + (0.15 * beatBoost) + ')');
+      beatGrd.addColorStop(1, 'rgba(0, 80, 200, 0)');
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = beatGrd;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(cxScreen * dpr, cyScreen * dpr);
+    ctx.scale(finalScale, finalScale);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 ' + (fontSize * dpr) + 'px Georgia, "Times New Roman", serif';
+
+    if (revealBlur > 0.5) {
+      ctx.filter = 'blur(' + (revealBlur * dpr) + 'px)';
+    }
+
+    ctx.shadowColor = '#88CCFF';
+    ctx.shadowBlur = glowBase * dpr;
+    ctx.globalAlpha = revealA;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText('I love you so much Katya)', 0, 0);
+
+    ctx.shadowBlur = (glowBase * 0.4) * dpr;
+    ctx.globalAlpha = revealA * 0.9;
+    ctx.fillText('I love you so much Katya)', 0, 0);
+
+    if (revealBlur > 0.5) {
+      ctx.filter = 'none';
+    }
+    ctx.restore();
+  }
+
+  // === Малює пульсуюче серце + хвилі навколо нього ===
+  // Активується після HEART_FADE_START, коли текстове серце вже почало зникати.
+  function drawHeartPulses(time) {
+    // Показуємо тільки після початку згасання і до кінця
+    if (time < HEART_FADE_START + 400) return;
+    if (time > TOTAL_DURATION) return;
+
+    // Поступове згасання всієї "пульсації" після появи тексту
+    var fadeOut = 1;
+    if (time > SUB_START + 1500) {
+      fadeOut = Math.max(0, 1 - (time - (SUB_START + 1500)) / 1500);
+    }
+    if (fadeOut <= 0.01) return;
+
+    var pulse = getHeartPulse(time);
+    if (pulse.waves.length === 0) return;
+
+    // Малюємо хвилі позаду (від найбільшої до найменшої)
+    for (var i = 0; i < pulse.waves.length; i++) {
+      var w = pulse.waves[i];
+      drawHeartWave(w.sizeMul, w.alpha * fadeOut, w.lineW, time);
+    }
+
+    // Легке "світіння" всього серця від удару — дуже делікатно
+    // (за допомогою того ж контуру, але з мінімальною альфою і товстим lineWidth)
+    var glowAlpha = 0.06 * (pulse.scale - 1) / 0.04 * fadeOut;
+    if (glowAlpha > 0.005 && pulse.scale > 1.005) {
+      drawHeartWave(1.0, glowAlpha * 3, 8, time);
+    }
+  }
+
+  function render(time) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Хвилі малюємо ПІД текстом, щоб слова серця були зверху
+    drawHeartPulses(time);
+    drawHeart(time);
+    drawFinalText(time);
+    drawVignette();
+  }
+
+  function tick(now) {
+    if (!startTime) startTime = now;
+    var elapsed = now - startTime;
+    if (elapsed <= TOTAL_DURATION + 1500) {
+      render(elapsed);
+      requestAnimationFrame(tick);
+    } else {
+      render(TOTAL_DURATION);
+      animationEnded = true;
+    }
+  }
+
+  resize();
+  setTimeout(function() { requestAnimationFrame(tick); }, 300);
+
+  var resizeTimeout;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(function() {
+      var wasStarted = startTime > 0;
+      var prevElapsed = wasStarted ? (performance.now() - startTime) : 0;
+      resize();
+      if (wasStarted) {
+        startTime = performance.now() - prevElapsed;
+        if (animationEnded) render(TOTAL_DURATION);
+      }
+    }, 200);
+  });
+
+  document.body.addEventListener('touchmove', function(e) {
+    e.preventDefault();
+  }, { passive: false });
+
+})();
+</script>
+</body>
+</html>
